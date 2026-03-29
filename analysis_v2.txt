@@ -1,6 +1,0 @@
-Analyzing tvaap_clean...                                        
-
-  error - The method 'debugPrint' isn't defined for the type 'NotificationService' - lib\core\notification_service.dart:74:9 - undefined_method
-   info - 'background' is deprecated and shouldn't be used. Use surface instead. This feature was deprecated after v3.18.0-0.1.pre - lib\theme.dart:18:5 - deprecated_member_use
-   info - 'background' is deprecated and shouldn't be used. Use surface instead. This feature was deprecated after v3.18.0-0.1.pre - lib\theme.dart:68:5 - deprecated_member_use
-
