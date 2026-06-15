@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'dart:typed_data'; // ✅ gerekli
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -8,9 +7,9 @@ import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/platform_file_ops.dart';
 import '../../settings/presentation/alert_settings_controller.dart';
 
 // ─────────────────────────────────────────────────────────
@@ -295,27 +294,10 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
         return;
       }
 
-      final appDir = await getApplicationDocumentsDirectory();
       final cat = _getEffectiveCategory(category);
-      final categoryDir = Directory('${appDir.path}/userImages/$cat');
+      final imageFiles = await listUserImagePaths(cat);
 
-      if (await categoryDir.exists()) {
-        final imageFiles = categoryDir
-            .listSync()
-            .where((f) {
-          final p = f.path.toLowerCase();
-          return p.endsWith('.jpg') ||
-              p.endsWith('.jpeg') ||
-              p.endsWith('.png') ||
-              p.endsWith('.webp');
-        })
-            .map((f) => f.path)
-            .toList();
-
-        if (mounted) setState(() => userImages = imageFiles);
-      } else {
-        if (mounted) setState(() => userImages = []);
-      }
+      if (mounted) setState(() => userImages = imageFiles);
     } catch (e) {
       debugPrint("Kullanıcı resimleri yükleme hatası: $e");
     }
@@ -339,7 +321,7 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
     if (isAsset) return AssetImage(path);
 
     if (kIsWeb) return NetworkImage(path);
-    return FileImage(File(path));
+    return localFileImageProvider(path);
   }
 
   // ─────────────────────────────────────────────────────────

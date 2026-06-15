@@ -1,12 +1,11 @@
-import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../core/platform_file_ops.dart';
 import '../data/alert_settings.dart';
 import 'alert_settings_controller.dart';
 import 'dart:convert';
@@ -431,13 +430,7 @@ class SlideSettingsPage extends ConsumerWidget {
     );
 
     if (result != null && result.files.isNotEmpty) {
-      final appDir = await getApplicationDocumentsDirectory();
       final internalDir = _getInternalDir(selectedKey);
-      final categoryDir = Directory('${appDir.path}/userImages/$internalDir');
-
-      if (!await categoryDir.exists()) {
-        await categoryDir.create(recursive: true);
-      }
 
       if (!context.mounted) return;
       _showLoadingDialog(context);
@@ -446,16 +439,14 @@ class SlideSettingsPage extends ConsumerWidget {
       for (var file in result.files) {
         if (file.path == null) continue;
 
-        final bytes = await File(file.path!).readAsBytes();
+        final bytes = await readLocalFileBytes(file.path!);
 
         final decoded = img.decodeImage(bytes);
         if (decoded == null) continue;
 
         final processed = ImageTvFixer.processForTv(decoded);
 
-        final fileName = '${DateTime.now().microsecondsSinceEpoch}.jpg';
-        await File('${categoryDir.path}/$fileName')
-            .writeAsBytes(img.encodeJpg(processed, quality: 85), flush: true);
+        await saveUserImageBytes(internalDir, img.encodeJpg(processed, quality: 85));
 
         count++;
       }
@@ -572,19 +563,8 @@ class SlideSettingsPage extends ConsumerWidget {
     String category,
     String categoryName,
   ) async {
-    final appDir = await getApplicationDocumentsDirectory();
     final internalDir = _getInternalDir(category);
-    final categoryDir = Directory('${appDir.path}/userImages/$internalDir');
-
-    final images = <File>[];
-    if (await categoryDir.exists()) {
-      images.addAll(
-        categoryDir.listSync().whereType<File>().where((file) {
-          final p = file.path.toLowerCase();
-          return p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.png') || p.endsWith('.webp');
-        }),
-      );
-    }
+    final images = await listUserImagePaths(internalDir);
 
     if (!context.mounted) return;
     await showModalBottomSheet(
@@ -605,22 +585,19 @@ class SlideSettingsPage extends ConsumerWidget {
             );
             if (result == null) return;
 
-            if (!await categoryDir.exists()) {
-              await categoryDir.create(recursive: true);
-            }
-
             for (final file in result.files) {
               if (file.path == null) continue;
 
-              final bytes = await File(file.path!).readAsBytes();
+              final bytes = await readLocalFileBytes(file.path!);
               final decoded = img.decodeImage(bytes);
               if (decoded == null) continue;
 
               final processed = ImageTvFixer.processForTv(decoded);
-              final fileName = '${DateTime.now().microsecondsSinceEpoch}.jpg';
-              final savedFile = File('${categoryDir.path}/$fileName');
-              await savedFile.writeAsBytes(img.encodeJpg(processed, quality: 85), flush: true);
-              images.add(savedFile);
+              final savedPath = await saveUserImageBytes(
+                internalDir,
+                img.encodeJpg(processed, quality: 85),
+              );
+              images.add(savedPath);
             }
 
             ref.read(alertSettingsProvider.notifier).triggerRefresh();
@@ -628,10 +605,8 @@ class SlideSettingsPage extends ConsumerWidget {
           }
 
           Future<void> deleteAt(int index) async {
-            final file = images.removeAt(index);
-            if (await file.exists()) {
-              await file.delete();
-            }
+            final path = images.removeAt(index);
+            await deleteLocalFile(path);
             ref.read(alertSettingsProvider.notifier).triggerRefresh();
             setSheetState(() {});
           }
@@ -639,8 +614,8 @@ class SlideSettingsPage extends ConsumerWidget {
           return _UserImageManagerSheet(
             title: categoryName,
             imageCount: images.length,
-            itemBuilder: (context, index) => Image.file(
-              images[index],
+            itemBuilder: (context, index) => Image(
+              image: localFileImageProvider(images[index]),
               fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
             ),
