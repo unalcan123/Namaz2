@@ -1,0 +1,877 @@
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:image/image.dart' as img;
+
+import '../data/alert_settings.dart';
+import 'alert_settings_controller.dart';
+import 'dart:convert';
+import 'package:hive_flutter/hive_flutter.dart';
+
+/// ✅ GÖRSEL İŞLEME YARDIMCISI (TV İÇİN NORMALLEŞTİRME)
+class ImageTvFixer {
+  /// Görseli 1920x1080 (16:9) formatına merkezden kırparak (cover mantığı) ölçekler
+  static img.Image resizeCoverAndCrop(
+    img.Image src, {
+    int targetW = 1920,
+    int targetH = 1080,
+  }) {
+    final double srcAspect = src.width / src.height;
+    final double targetAspect = targetW / targetH;
+
+    img.Image resized;
+    if (srcAspect > targetAspect) {
+      resized = img.copyResize(src, height: targetH, interpolation: img.Interpolation.linear);
+    } else {
+      resized = img.copyResize(src, width: targetW, interpolation: img.Interpolation.linear);
+    }
+
+    int x = ((resized.width - targetW) ~/ 2).clamp(0, (resized.width - targetW).clamp(0, resized.width));
+    int y = ((resized.height - targetH) ~/ 2).clamp(0, (resized.height - targetH).clamp(0, resized.height));
+
+    return img.copyCrop(resized, x: x, y: y, width: targetW, height: targetH);
+  }
+
+  /// Görseli TV standartlarına getirir (EXIF yönünü düzelt + 16:9 cover)
+  static img.Image processForTv(img.Image input) {
+    return resizeCoverAndCrop(img.bakeOrientation(input));
+  }
+}
+
+class SlideSettingsPage extends ConsumerWidget {
+  const SlideSettingsPage({super.key});
+  Box get _webBox => Hive.box('web_user_images');
+
+  String _getEffectiveCategory(String category) {
+    if (category == 'Kullanıcı Foto') return 'user';
+    if (category == 'Genel Resimler') return 'resim';
+    if (category == 'Hadis-i Şerifler') return 'hadis';
+    if (category == 'Dualar') return 'dua';
+    if (category == 'Besmele') return 'besmele';
+    if (category == 'Namaz Bilgileri') return 'namaz';
+    if (category == 'Ramazan') return 'ramazan';
+    return category;
+  }
+
+  String _webKey(String category) {
+    final cat = _getEffectiveCategory(category);
+    return 'userImages_$cat';
+  }
+
+  Future<void> addUserImagesWeb(BuildContext context, WidgetRef ref) async {
+    final settings = ref.read(alertSettingsProvider);
+    final fullMap = _getUserPhotoCategoryMap(settings);
+
+    final String? selectedKey = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Kategori Seçin'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: MediaQuery.sizeOf(context).height * 0.55,
+          child: ListView(
+            shrinkWrap: true,
+            children: fullMap.entries
+                .map((e) => ListTile(
+                      title: Text(e.value),
+                      onTap: () => Navigator.pop(context, e.key),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+    );
+    if (selectedKey == null) return;
+
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null) return;
+
+    final key = _webKey(selectedKey);
+    final List existing = (_webBox.get(key) as List?) ?? [];
+
+    for (final f in result.files) {
+      final bytes = f.bytes;
+      if (bytes == null) continue;
+      existing.add(base64Encode(bytes));
+    }
+
+    await _webBox.put(key, existing);
+    ref.read(alertSettingsProvider.notifier).touchLastUpdate();
+  }
+
+  static const Map<String, String> defaultCategoryMap = {
+    'all_assets': 'Tüm Asset Resimleri',
+    'resim': 'Genel Resimler',
+    'hadis': 'Hadis-i Şerifler',
+    'dua': 'Dualar',
+    'besmele': 'Besmele',
+    'namaz': 'Namaz Bilgileri',
+    'ramazan': 'Ramazan',
+    'islam/namaz': 'İslam / Namaz',
+    'islam/dua': 'İslam / Dua',
+    'islam/kuran': 'İslam / Kur’an',
+    'islam/oruc': 'İslam / Oruç',
+    'islam/ramazan': 'İslam / Ramazan',
+    'islam/kabe': 'İslam / Kâbe',
+    'islam/mekke': 'İslam / Mekke',
+    'islam/medine': 'İslam / Medine',
+    'islam/hac': 'İslam / Hac',
+    'islam/islamic_patterns': 'İslam / Desenler',
+    'hakikat': 'Hakikat Damlaları',
+    'karisik': 'Karışık (Foto + Hakikat)',
+    'Kullanıcı Foto': 'Benim Fotoğraflarım',
+  };
+
+  Map<String, String> _getFullCategoryMap(AlertSettings settings) {
+    return {...defaultCategoryMap, ...settings.userCategories};
+  }
+
+  Map<String, String> _getUserPhotoCategoryMap(AlertSettings settings) {
+    final excluded = {'all_assets', 'hakikat', 'karisik'};
+    return Map.fromEntries(
+      _getFullCategoryMap(settings).entries.where((entry) => !excluded.contains(entry.key)),
+    );
+  }
+
+  String _getInternalDir(String key) => key == 'Kullanıcı Foto' ? 'user' : key;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(alertSettingsProvider);
+    final alertController = ref.read(alertSettingsProvider.notifier);
+    final fullCategoryMap = _getFullCategoryMap(settings);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    // Modern renk paleti
+    final cardColor = isDark ? const Color(0xFF1E1E2C) : Colors.white;
+    final surfaceColor = isDark ? const Color(0xFF16162A) : const Color(0xFFF5F5FA);
+    final accentColor = const Color(0xFF6C63FF);
+    final accentLight = accentColor.withValues(alpha: 0.1);
+
+    return Scaffold(
+      backgroundColor: surfaceColor,
+      appBar: AppBar(
+        title: const Text('Slayt Ayarları'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        centerTitle: true,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        children: [
+          // --- Kategori Seçimi ---
+          _SectionHeader(icon: Icons.palette_outlined, title: 'Görüntülenecek Kategori'),
+          const SizedBox(height: 8),
+          Container(
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              children: fullCategoryMap.entries.map((entry) {
+                final isSelected = settings.slideCategory == entry.key;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isSelected ? accentLight : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: RadioListTile<String>(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    activeColor: accentColor,
+                    title: Text(
+                      entry.value,
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                        color: isSelected ? accentColor : null,
+                      ),
+                    ),
+                    value: entry.key,
+                    groupValue: settings.slideCategory,
+                    onChanged: (value) {
+                      if (value != null) alertController.setSlideCategory(value);
+                    },
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // --- Değişim Süresi ---
+          _SectionHeader(icon: Icons.timer_outlined, title: 'Fotoğraf Değişim Süresi'),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.speed, color: accentColor, size: 28),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [5, 10, 15, 20, 30, 45, 60].map((seconds) {
+                      final isSelected = settings.slideDuration == seconds;
+                      return ChoiceChip(
+                        label: Text('$seconds sn'),
+                        selected: isSelected,
+                        selectedColor: accentColor,
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : null,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                        onSelected: (_) => alertController.setSlideDuration(seconds),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // --- Aksiyon Butonları ---
+          _SectionHeader(icon: Icons.photo_camera_outlined, title: 'Fotoğraf İşlemleri'),
+          const SizedBox(height: 8),
+
+          // Yeni Fotoğraf Ekle
+          _ActionCard(
+            icon: Icons.add_photo_alternate_outlined,
+            iconColor: Colors.green,
+            title: 'Yeni Fotoğraf Ekle',
+            subtitle: 'TV formatına uygun olarak ekler',
+            onTap: () async {
+              if (kIsWeb) {
+                await addUserImagesWeb(context, ref);
+                if (context.mounted) Navigator.pop(context);
+              } else {
+                await _pickUserImageWithCategory(context, ref);
+                if (context.mounted) Navigator.pop(context);
+              }
+            },
+            cardColor: cardColor,
+          ),
+
+          const SizedBox(height: 10),
+
+          // Kullanıcı Fotoğraflarını Düzenle
+          _ActionCard(
+            icon: Icons.photo_library_outlined,
+            iconColor: Colors.blue,
+            title: 'Fotoğraflarımı Düzenle',
+            subtitle: 'Eklediğiniz fotoğrafları görüntüleyip silebilirsiniz',
+            onTap: () => _manageUserImages(context, ref),
+            cardColor: cardColor,
+          ),
+
+          const SizedBox(height: 10),
+
+          // Yeni Kategori Oluştur
+          _ActionCard(
+            icon: Icons.create_new_folder_outlined,
+            iconColor: Colors.orange,
+            title: 'Yeni Kategori Oluştur',
+            subtitle: 'Kendi özel kategorinizi ekleyin',
+            onTap: () => _addNewCategory(context, ref),
+            cardColor: cardColor,
+          ),
+
+          // --- Kullanıcı Kategorileri ---
+          if (settings.userCategories.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _SectionHeader(icon: Icons.folder_special_outlined, title: 'Kategorilerim'),
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: settings.userCategories.entries.map((e) {
+                  return ListTile(
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.folder_open, color: Colors.orange, size: 22),
+                    ),
+                    title: Text(e.value, style: const TextStyle(fontWeight: FontWeight.w500)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                      onPressed: () => _confirmDeleteCategory(context, e.key, e.value, alertController),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  void _showLoadingDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+  }
+
+  Future<void> _addNewCategory(BuildContext context, WidgetRef ref) async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Yeni Kategori"),
+        content: TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            hintText: "Kategori adı girin",
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            filled: true,
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("İptal")),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text("Ekle"),
+          ),
+        ],
+      ),
+    );
+
+    if (name != null && name.isNotEmpty) {
+      await ref.read(alertSettingsProvider.notifier).addUserCategory(name);
+    }
+  }
+
+  Future<void> _pickUserImageWithCategory(BuildContext context, WidgetRef ref) async {
+    final settings = ref.read(alertSettingsProvider);
+    final fullMap = _getUserPhotoCategoryMap(settings);
+
+    final String? selectedKey = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Kategori Seçin"),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: MediaQuery.sizeOf(context).height * 0.55,
+          child: ListView(
+            shrinkWrap: true,
+            children: fullMap.entries
+                .map((e) => ListTile(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      title: Text(e.value),
+                      onTap: () => Navigator.pop(context, e.key),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+    );
+
+    if (selectedKey == null) return;
+
+    if (!kIsWeb) {
+      await Permission.photos.request();
+      await Permission.storage.request();
+    }
+
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+
+    if (result != null && result.files.isNotEmpty) {
+      final appDir = await getApplicationDocumentsDirectory();
+      final internalDir = _getInternalDir(selectedKey);
+      final categoryDir = Directory('${appDir.path}/userImages/$internalDir');
+
+      if (!await categoryDir.exists()) {
+        await categoryDir.create(recursive: true);
+      }
+
+      if (!context.mounted) return;
+      _showLoadingDialog(context);
+      int count = 0;
+
+      for (var file in result.files) {
+        if (file.path == null) continue;
+
+        final bytes = await File(file.path!).readAsBytes();
+
+        final decoded = img.decodeImage(bytes);
+        if (decoded == null) continue;
+
+        final processed = ImageTvFixer.processForTv(decoded);
+
+        final fileName = '${DateTime.now().microsecondsSinceEpoch}.jpg';
+        await File('${categoryDir.path}/$fileName')
+            .writeAsBytes(img.encodeJpg(processed, quality: 85), flush: true);
+
+        count++;
+      }
+
+      if (context.mounted) {
+        Navigator.pop(context);
+        ref.read(alertSettingsProvider.notifier).triggerRefresh();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("$count fotoğraf TV formatında eklendi."),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _manageUserImages(BuildContext context, WidgetRef ref) async {
+    final settings = ref.read(alertSettingsProvider);
+    final fullMap = _getUserPhotoCategoryMap(settings);
+
+    final String? selectedKey = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Düzenlenecek Kategori"),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: MediaQuery.sizeOf(context).height * 0.55,
+          child: ListView(
+            shrinkWrap: true,
+            children: fullMap.entries
+                .map((e) => ListTile(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      title: Text(e.value),
+                      onTap: () => Navigator.pop(context, e.key),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+    );
+
+    if (selectedKey == null || !context.mounted) return;
+    final categoryName = fullMap[selectedKey] ?? selectedKey;
+
+    if (kIsWeb) {
+      await _manageUserImagesWeb(context, ref, selectedKey, categoryName);
+    } else {
+      await _manageUserImagesMobile(context, ref, selectedKey, categoryName);
+    }
+  }
+
+  Future<void> _manageUserImagesWeb(
+    BuildContext context,
+    WidgetRef ref,
+    String category,
+    String categoryName,
+  ) async {
+    final key = _webKey(category);
+    final images = List<String>.from(((_webBox.get(key) as List?) ?? []).cast<String>());
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          Future<void> addImages() async {
+            final result = await FilePicker.platform.pickFiles(
+              type: FileType.image,
+              allowMultiple: true,
+              withData: true,
+            );
+            if (result == null) return;
+
+            for (final file in result.files) {
+              final bytes = file.bytes;
+              if (bytes == null) continue;
+              images.add(base64Encode(bytes));
+            }
+
+            await _webBox.put(key, images);
+            ref.read(alertSettingsProvider.notifier).triggerRefresh();
+            setSheetState(() {});
+          }
+
+          Future<void> deleteAt(int index) async {
+            images.removeAt(index);
+            await _webBox.put(key, images);
+            ref.read(alertSettingsProvider.notifier).triggerRefresh();
+            setSheetState(() {});
+          }
+
+          return _UserImageManagerSheet(
+            title: categoryName,
+            imageCount: images.length,
+            itemBuilder: (context, index) => Image.memory(
+              base64Decode(images[index]),
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
+            ),
+            onAdd: addImages,
+            onDelete: deleteAt,
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _manageUserImagesMobile(
+    BuildContext context,
+    WidgetRef ref,
+    String category,
+    String categoryName,
+  ) async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final internalDir = _getInternalDir(category);
+    final categoryDir = Directory('${appDir.path}/userImages/$internalDir');
+
+    final images = <File>[];
+    if (await categoryDir.exists()) {
+      images.addAll(
+        categoryDir.listSync().whereType<File>().where((file) {
+          final p = file.path.toLowerCase();
+          return p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.png') || p.endsWith('.webp');
+        }),
+      );
+    }
+
+    if (!context.mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          Future<void> addImages() async {
+            if (!kIsWeb) {
+              await Permission.photos.request();
+              await Permission.storage.request();
+            }
+
+            final result = await FilePicker.platform.pickFiles(
+              type: FileType.image,
+              allowMultiple: true,
+              withData: true,
+            );
+            if (result == null) return;
+
+            if (!await categoryDir.exists()) {
+              await categoryDir.create(recursive: true);
+            }
+
+            for (final file in result.files) {
+              if (file.path == null) continue;
+
+              final bytes = await File(file.path!).readAsBytes();
+              final decoded = img.decodeImage(bytes);
+              if (decoded == null) continue;
+
+              final processed = ImageTvFixer.processForTv(decoded);
+              final fileName = '${DateTime.now().microsecondsSinceEpoch}.jpg';
+              final savedFile = File('${categoryDir.path}/$fileName');
+              await savedFile.writeAsBytes(img.encodeJpg(processed, quality: 85), flush: true);
+              images.add(savedFile);
+            }
+
+            ref.read(alertSettingsProvider.notifier).triggerRefresh();
+            setSheetState(() {});
+          }
+
+          Future<void> deleteAt(int index) async {
+            final file = images.removeAt(index);
+            if (await file.exists()) {
+              await file.delete();
+            }
+            ref.read(alertSettingsProvider.notifier).triggerRefresh();
+            setSheetState(() {});
+          }
+
+          return _UserImageManagerSheet(
+            title: categoryName,
+            imageCount: images.length,
+            itemBuilder: (context, index) => Image.file(
+              images[index],
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
+            ),
+            onAdd: addImages,
+            onDelete: deleteAt,
+          );
+        },
+      ),
+    );
+  }
+
+  void _confirmDeleteCategory(
+    BuildContext context,
+    String key,
+    String name,
+    AlertSettingsNotifier controller,
+  ) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Kategoriyi Sil"),
+        content: Text("$name kategorisini ve içindeki tüm fotoğrafları silmek istiyor musunuz?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("İptal")),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Sil"),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await controller.removeUserCategory(key);
+    }
+  }
+}
+
+// --- Modern UI Bileşenleri ---
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+
+  const _SectionHeader({required this.icon, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, top: 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: Colors.grey),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UserImageManagerSheet extends StatelessWidget {
+  final String title;
+  final int imageCount;
+  final Widget Function(BuildContext context, int index) itemBuilder;
+  final Future<void> Function() onAdd;
+  final Future<void> Function(int index) onDelete;
+
+  const _UserImageManagerSheet({
+    required this.title,
+    required this.imageCount,
+    required this.itemBuilder,
+    required this.onAdd,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.75,
+      minChildSize: 0.45,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return Column(
+          children: [
+            AppBar(
+              title: Text(title),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  tooltip: 'Fotoğraf ekle',
+                  icon: const Icon(Icons.add_photo_alternate_outlined),
+                  onPressed: onAdd,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  imageCount == 0 ? 'Bu kategoride eklenmiş fotoğraf yok' : '$imageCount fotoğraf',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: imageCount == 0
+                  ? const Center(
+                      child: Icon(Icons.photo_library_outlined, size: 56, color: Colors.grey),
+                    )
+                  : GridView.builder(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                        childAspectRatio: 16 / 9,
+                      ),
+                      itemCount: imageCount,
+                      itemBuilder: (context, index) {
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              ColoredBox(
+                                color: Colors.black12,
+                                child: itemBuilder(context, index),
+                              ),
+                              Positioned(
+                                top: 6,
+                                right: 6,
+                                child: Material(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(20),
+                                  child: IconButton(
+                                    tooltip: 'Sil',
+                                    icon: const Icon(Icons.delete_outline, color: Colors.white),
+                                    onPressed: () => onDelete(index),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ActionCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final Color cardColor;
+
+  const _ActionCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    required this.cardColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: cardColor,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 0,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: iconColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: iconColor, size: 24),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text(subtitle, style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Colors.grey.shade400),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
