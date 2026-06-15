@@ -93,15 +93,42 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
   ImageStream? _activeStream;
   ImageStreamListener? _activeListener;
 
+  String _normalizeCategory(String category) {
+    final normalized = category
+        .toLowerCase()
+        .replaceAll('ı', 'i')
+        .replaceAll('ş', 's')
+        .replaceAll('ğ', 'g')
+        .replaceAll('ü', 'u')
+        .replaceAll('ö', 'o')
+        .replaceAll('ç', 'c')
+        .replaceAll('â', 'a')
+        .replaceAll('î', 'i')
+        .replaceAll('û', 'u')
+        .replaceAll(RegExp(r"['’`´]"), '')
+        .trim();
+
+    if (normalized.contains('kullanici')) return 'user';
+    if (normalized.contains('genel')) return 'resim';
+    if (normalized.contains('hadis')) return 'hadis';
+    if (normalized.contains('dua')) return 'dua';
+    if (normalized.contains('besmele')) return 'besmele';
+    if (normalized.contains('namaz')) return 'namaz';
+    if (normalized.contains('ramazan')) return 'ramazan';
+    if (normalized.contains('kuran')) return 'kuran';
+    if (normalized.contains('oruc')) return 'oruc';
+    if (normalized.contains('kabe')) return 'kabe';
+    if (normalized.contains('mekke')) return 'mekke';
+    if (normalized.contains('medine')) return 'medine';
+    if (normalized.contains('hac')) return 'hac';
+    if (normalized.contains('pattern') || normalized.contains('desen')) {
+      return 'islamic_patterns';
+    }
+    return normalized.replaceAll(RegExp(r'\s*/\s*'), '/');
+  }
+
   String _getEffectiveCategory(String category) {
-    if (category == 'Kullanıcı Foto') return 'user';
-    if (category == 'Genel Resimler') return 'resim';
-    if (category == 'Hadis-i Şerifler') return 'hadis';
-    if (category == 'Dualar') return 'dua';
-    if (category == 'Besmele') return 'besmele';
-    if (category == 'Namaz Bilgileri') return 'namaz';
-    if (category == 'Ramazan') return 'ramazan';
-    return category;
+    return _normalizeCategory(category);
   }
 
   String _webKey(String category) {
@@ -250,9 +277,9 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
 
   Future<void> _loadAssetImages(String category) async {
     try {
-      final manifestMap = await _loadAssetManifest();
+      final assetPaths = await _loadAssetPaths();
 
-      final cat = _getEffectiveCategory(category).toLowerCase();
+      final cat = _getEffectiveCategory(category);
       final assetFolders = <String>[
         'assets/resim/$cat/',
         'resim/$cat/',
@@ -267,7 +294,7 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
         ]);
       }
 
-      final images = manifestMap.keys.where((key) {
+      final images = assetPaths.where((key) {
         final k = key.toLowerCase();
         final okFolder = cat == 'all_assets'
             ? k.startsWith('assets/')
@@ -285,14 +312,9 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
     }
   }
 
-  Future<Map<String, dynamic>> _loadAssetManifest() async {
-    try {
-      final manifestContent = await rootBundle.loadString('AssetManifest.json');
-      return json.decode(manifestContent) as Map<String, dynamic>;
-    } catch (_) {
-      final manifestContent = await rootBundle.loadString('AssetManifest.bin.json');
-      return json.decode(manifestContent) as Map<String, dynamic>;
-    }
+  Future<List<String>> _loadAssetPaths() async {
+    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+    return manifest.listAssets();
   }
 
   Future<void> _loadUserImages(String category) async {

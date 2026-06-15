@@ -1,7 +1,6 @@
-import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'alert_settings_controller.dart';
@@ -20,8 +19,9 @@ class BgMusicSettingsPage extends ConsumerWidget {
   /// assets/music/ klasöründeki tüm mp3 dosyalarını listeler
   Future<List<String>> _loadAppMusicAssets() async {
     try {
-      final manifest = await _loadAssetManifest();
-      final musicAssets = manifest.keys
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final musicAssets = manifest
+          .listAssets()
           .where((key) => key.startsWith('assets/music/') && key.endsWith('.mp3'))
           .toList()
         ..sort();
@@ -34,16 +34,6 @@ class BgMusicSettingsPage extends ConsumerWidget {
       21,
       (index) => 'assets/music/Video download (${index + 1}).mp3',
     );
-  }
-
-  Future<Map<String, dynamic>> _loadAssetManifest() async {
-    try {
-      final manifestContent = await rootBundle.loadString('AssetManifest.json');
-      return json.decode(manifestContent) as Map<String, dynamic>;
-    } catch (_) {
-      final manifestContent = await rootBundle.loadString('AssetManifest.bin.json');
-      return json.decode(manifestContent) as Map<String, dynamic>;
-    }
   }
 
   /// Dosya adını yoldan çıkarır ve güzelleştirir
