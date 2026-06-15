@@ -5,6 +5,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: read
   pages: write
@@ -31,9 +34,9 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # GitHub Pages project URL'i /namaz2/ olduğu için base-href şart
+      # GitHub Pages project URL'i /Namaz2/ olduğu için base-href şart
       - name: Build web
-        run: flutter build web --release --base-href "/namaz2/"
+        run: flutter build web --release --base-href "/Namaz2/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
