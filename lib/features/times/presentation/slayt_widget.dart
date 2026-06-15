@@ -250,8 +250,7 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
 
   Future<void> _loadAssetImages(String category) async {
     try {
-      final manifestContent = await rootBundle.loadString('AssetManifest.json');
-      final Map<String, dynamic> manifestMap = json.decode(manifestContent);
+      final manifestMap = await _loadAssetManifest();
 
       final cat = _getEffectiveCategory(category).toLowerCase();
       final assetFolders = <String>[
@@ -283,6 +282,16 @@ class _SlaytWidgetState extends ConsumerState<SlaytWidget> {
       if (mounted) setState(() => assetImages = images);
     } catch (e) {
       debugPrint("Asset yükleme hatası: $e");
+    }
+  }
+
+  Future<Map<String, dynamic>> _loadAssetManifest() async {
+    try {
+      final manifestContent = await rootBundle.loadString('AssetManifest.json');
+      return json.decode(manifestContent) as Map<String, dynamic>;
+    } catch (_) {
+      final manifestContent = await rootBundle.loadString('AssetManifest.bin.json');
+      return json.decode(manifestContent) as Map<String, dynamic>;
     }
   }
 

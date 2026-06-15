@@ -71,3 +71,13 @@ flutter:
     - assets/data/slides.json
     - assets/images/backgrounds/
     - assets/images/islam/
+    - assets/images/islam/namaz/
+    - assets/images/islam/dua/
+    - assets/images/islam/kuran/
+    - assets/images/islam/oruc/
+    - assets/images/islam/ramazan/
+    - assets/images/islam/kabe/
+    - assets/images/islam/mekke/
+    - assets/images/islam/medine/
+    - assets/images/islam/hac/
+    - assets/images/islam/islamic_patterns/

@@ -20,16 +20,29 @@ class BgMusicSettingsPage extends ConsumerWidget {
   /// assets/music/ klasöründeki tüm mp3 dosyalarını listeler
   Future<List<String>> _loadAppMusicAssets() async {
     try {
-      final manifestContent = await rootBundle.loadString('AssetManifest.json');
-      final Map<String, dynamic> manifest = json.decode(manifestContent);
+      final manifest = await _loadAssetManifest();
       final musicAssets = manifest.keys
           .where((key) => key.startsWith('assets/music/') && key.endsWith('.mp3'))
           .toList()
         ..sort();
-      return musicAssets;
+      if (musicAssets.length > 1) return musicAssets;
     } catch (e) {
       debugPrint('Uygulama müzikleri yüklenirken hata: $e');
-      return [];
+    }
+
+    return List.generate(
+      21,
+      (index) => 'assets/music/Video download (${index + 1}).mp3',
+    );
+  }
+
+  Future<Map<String, dynamic>> _loadAssetManifest() async {
+    try {
+      final manifestContent = await rootBundle.loadString('AssetManifest.json');
+      return json.decode(manifestContent) as Map<String, dynamic>;
+    } catch (_) {
+      final manifestContent = await rootBundle.loadString('AssetManifest.bin.json');
+      return json.decode(manifestContent) as Map<String, dynamic>;
     }
   }
 
